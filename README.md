@@ -8,7 +8,7 @@ A lightweight, vanilla-friendly, simple mod that changes item interaction in Min
 
 
 #### Item Pick Up Pull
-Aim at any item on the ground from a distance and **right-click** to pull it directly to you. 
+Aim at any item on the ground from and **right-click** to pull it directly to you. you can pick up items as far as you can place blocks
 
 
 #### Area Pickup
