@@ -2,6 +2,7 @@
 package com.noem1s.pickthrow.events;
 
 import com.noem1s.pickthrow.Pickthrow;
+import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -13,14 +14,12 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
-// CORRECTED IMPORT: This is the original and correct event, which is cancelable.
 import net.minecraftforge.event.entity.player.EntityItemPickupEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import net.minecraft.ChatFormatting;
 
-
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -37,14 +36,11 @@ public class PickupEvents {
     public static final double AOE_RANGE_CROUCH = 2.5D;
     public static final double SPEED = 0.8D;
 
-    // CORRECTED METHOD: Using the proper, cancelable EntityItemPickupEvent
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void onPlayerPickup(EntityItemPickupEvent event) {
-        // If the item is in our "suck" map, allow the pickup to proceed
         if (SUCKED_ITEMS.containsKey(event.getItem().getUUID())) {
             return;
         }
-        // Otherwise, cancel the event to prevent pickup by walking over it
         event.setCanceled(true);
     }
 
@@ -61,12 +57,26 @@ public class PickupEvents {
             AABB searchBox = player.getBoundingBox().inflate(AOE_RANGE_CROUCH);
             List<ItemEntity> nearbyItems = player.level().getEntitiesOfClass(ItemEntity.class, searchBox);
 
-            for (ItemEntity item : nearbyItems) {
-                if (hasSpaceInInventory(player, item.getItem())) {
-                    item.setPickUpDelay(0);
-                    SUCKED_ITEMS.put(item.getUUID(), player.getUUID());
+            // Create a temporary, mutable copy of the player's inventory to simulate the entire pickup action at once.
+            // This prevents trying to pick up more items than will actually fit.
+            List<ItemStack> simulatedInventory = new ArrayList<>();
+            for (ItemStack stack : player.getInventory().items) {
+                simulatedInventory.add(stack.copy());
+            }
+
+            boolean inventoryFullMessageSent = false;
+            for (ItemEntity itemEntity : nearbyItems) {
+                // If the simulated inventory can accept the item, mark it for pickup
+                if (tryAddItem(simulatedInventory, itemEntity.getItem())) {
+                    itemEntity.setPickUpDelay(0);
+                    SUCKED_ITEMS.put(itemEntity.getUUID(), player.getUUID());
                 } else {
-                    player.displayClientMessage(Component.literal("Inventory full").withStyle(ChatFormatting.RED), true);
+                    // If the simulation fails, it means there's no space.
+                    // We send the message once to avoid spam.
+                    if (!inventoryFullMessageSent) {
+                        player.displayClientMessage(Component.literal("Inventory full").withStyle(ChatFormatting.RED), true);
+                        inventoryFullMessageSent = true;
+                    }
                 }
             }
         }
@@ -99,11 +109,6 @@ public class PickupEvents {
                 return true;
             }
 
-            if (!hasSpaceInInventory(player, item.getItem())) {
-                player.displayClientMessage(Component.literal("Inventory full").withStyle(ChatFormatting.RED), true);
-                return true;
-            }
-
             Vec3 direction = player.getEyePosition().subtract(item.position());
             if (direction.lengthSqr() < 1.25D) {
                 item.playerTouch(player);
@@ -116,23 +121,40 @@ public class PickupEvents {
         });
     }
 
-    private static boolean hasSpaceInInventory(Player player, ItemStack stackToPickup) {
-        if (stackToPickup.isEmpty()) {
-            return true;
-        }
-        // Check for any empty slot
-        if (player.getInventory().getFreeSlot() != -1) {
-            return true;
-        }
-        // If no empty slots, check for existing stacks that can accept the item
-        for (ItemStack invStack : player.getInventory().items) {
-            if (ItemStack.isSameItemSameTags(invStack, stackToPickup) && invStack.getCount() < invStack.getMaxStackSize()) {
-                // Check if the remaining space is enough
-                if (invStack.getCount() + stackToPickup.getCount() <= invStack.getMaxStackSize()) {
+    /**
+     * Simulates adding an item stack to a list representing an inventory.
+     * This is a preventative check to ensure an item can fit before we try to move it.
+     * It works by trying to merge with existing stacks first, then finding an empty slot.
+     *
+     * @param simulatedInventory A list of ItemStacks representing the inventory. This list IS modified.
+     * @param stackToAdd The ItemStack to be added. A copy is made, so the original is not modified.
+     * @return true if the entire stack could be added, false otherwise.
+     */
+    private static boolean tryAddItem(List<ItemStack> simulatedInventory, ItemStack stackToAdd) {
+        ItemStack remaining = stackToAdd.copy();
+
+        // Pass 1: Try to merge with existing stacks in the main inventory area (first 36 slots)
+        for (int i = 0; i < 36; i++) {
+            ItemStack invStack = simulatedInventory.get(i);
+            if (ItemStack.isSameItemSameTags(invStack, remaining) && invStack.isStackable() && invStack.getCount() < invStack.getMaxStackSize()) {
+                int canAccept = invStack.getMaxStackSize() - invStack.getCount();
+                int toTransfer = Math.min(canAccept, remaining.getCount());
+                invStack.grow(toTransfer);
+                remaining.shrink(toTransfer);
+                if (remaining.isEmpty()) {
                     return true;
                 }
             }
         }
-        return false;
+
+        // Pass 2: Find an empty slot in the main inventory area
+        for (int i = 0; i < 36; i++) {
+            if (simulatedInventory.get(i).isEmpty()) {
+                simulatedInventory.set(i, remaining);
+                return true;
+            }
+        }
+
+        return false; // No space found
     }
 }
